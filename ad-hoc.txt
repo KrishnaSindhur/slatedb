@@ -1,0 +1,48 @@
+export CLOUD_PROVIDER=local
+export LOCAL_PATH=/tmp
+DB=test_admin
+
+use slatedb::config::{CheckpointOptions, CheckpointScope};
+use slatedb::Db;
+use std::{env, error::Error, sync::Arc, time::Duration};
+use tokio::time::sleep;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let path = env::args().nth(1).expect("usage: <PATH> [count]");
+    let count: u64 = env::args().nth(2).unwrap_or_else(|| "16".into()).parse()?;
+
+    let store = slatedb::admin::load_object_store_from_env(None)?;
+    let db = Db::open(path.clone(), Arc::clone(&store)).await?;
+
+    for i in 0..count {
+        db.put(format!("k{i}").as_bytes(), format!("v{i}").as_bytes()).await?;
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    db.create_checkpoint(CheckpointScope::All, &CheckpointOptions::default()).await?;
+    db.close().await?;
+    Ok(())
+}
+
+
+# re-build & run the seeder
+cargo run --manifest-path examples/Cargo.toml --bin seed_seq_tracker -- "$DB" 32
+
+
+
+
+ls -la /tmp/test_admin
+# Expect MANIFEST-..., CHECKPOINT-... (and possibly SST-...) files
+
+
+# manifests / checkpoints should be non-empty
+target/release/slatedb --path "$DB" list-manifests
+target/release/slatedb --path "$DB" list-checkpoints
+
+# Lookups (pick a seq within 0..31)
+target/release/slatedb --path "$DB" seq-to-ts 4 --round down
+
+# Round-trip example
+TS=$(target/release/slatedb --path "$DB" seq-to-ts 4 --round down)
+target/release/slatedb --path "$DB" ts-to-seq "$TS" --round up
